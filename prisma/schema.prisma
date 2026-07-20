@@ -1,0 +1,522 @@
+// Fatora — reconciliation & profit tracking for Moroccan COD sellers.
+// All money is MAD, stored as Decimal(12,2). Never Float.
+// Every tenant-owned row hangs off storeId.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------- accounts
+
+model User {
+  id           String                @id @default(cuid())
+  email        String                @unique
+  passwordHash String
+  name         String
+  createdAt    DateTime              @default(now())
+  updatedAt    DateTime              @updatedAt
+  memberships  Membership[]
+  attempts     ConfirmationAttempt[]
+
+  @@map("users")
+}
+
+enum MemberRole {
+  OWNER
+  ADMIN
+  CONFIRMATRICE // limited: sees/confirms orders, never profit or billing
+}
+
+model Membership {
+  id      String     @id @default(cuid())
+  userId  String
+  storeId String
+  role    MemberRole @default(OWNER)
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, storeId])
+  @@index([storeId])
+  @@map("memberships")
+}
+
+model Store {
+  id             String   @id @default(cuid())
+  name           String
+  // Sellers judge "stuck in transit" differently; make the threshold theirs.
+  stuckAfterDays Int      @default(7)
+  /// Last reference handed out to a manual order (CMD-<n>). A counter, not a
+  /// MAX() over existing rows: string ordering would rank CMD-9999 above
+  /// CMD-10000, and two confirmatrices saving at once would collide. An
+  /// atomic increment is race-free and cheap.
+  orderCounter   Int      @default(2000)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  memberships   Membership[]
+  products      Product[]
+  couriers      Courier[]
+  orders        Order[]
+  importBatches ImportBatch[]
+  reportLines   CourierReportLine[]
+  discrepancies Discrepancy[]
+  payouts       Payout[]
+  adSpends      AdSpend[]
+  blacklist     BlacklistedCustomer[]
+  mappings      ColumnMapping[]
+
+  @@map("stores")
+}
+
+// ---------------------------------------------------------------- catalogue
+
+model Product {
+  id        String   @id @default(cuid())
+  storeId   String
+  sku       String
+  name      String
+  // costPrice is what the seller pays; sellPrice is the COD price.
+  costPrice Decimal  @db.Decimal(12, 2)
+  sellPrice Decimal  @db.Decimal(12, 2)
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  store    Store       @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  items    OrderItem[]
+  adSpends AdSpend[]
+
+  @@unique([storeId, sku])
+  @@index([storeId])
+  @@map("products")
+}
+
+// ---------------------------------------------------------------- couriers
+
+model Courier {
+  id      String  @id @default(cuid())
+  storeId String
+  name    String
+  // Selects the report parser: amana | ozone | cathedis | sendit | generic
+  slug    String
+  active  Boolean @default(true)
+
+  store       Store               @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  feeRules    CourierFeeRule[]
+  orders      Order[]
+  reportLines CourierReportLine[]
+  payouts     Payout[]
+  batches     ImportBatch[]
+
+  @@unique([storeId, slug])
+  @@index([storeId])
+  @@map("couriers")
+}
+
+// Every seller negotiates their own rates, and rates often differ per city.
+// A rule with city = null is that courier's default.
+model CourierFeeRule {
+  id           String   @id @default(cuid())
+  courierId    String
+  city         String?
+  // Flat fee when a parcel is delivered.
+  deliveredFee Decimal  @default(0) @db.Decimal(12, 2)
+  // Flat fee when a parcel comes back — the silent profit killer.
+  returnFee    Decimal  @default(0) @db.Decimal(12, 2)
+  // Percentage the courier takes off the collected COD amount.
+  codPercent   Decimal  @default(0) @db.Decimal(5, 2)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  courier Courier @relation(fields: [courierId], references: [id], onDelete: Cascade)
+
+  @@unique([courierId, city])
+  @@index([courierId])
+  @@map("courier_fee_rules")
+}
+
+// ---------------------------------------------------------------- orders
+
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  IN_TRANSIT
+  DELIVERED
+  RETURNED
+  REFUSED
+  LOST
+  CANCELLED
+}
+
+enum PaymentStatus {
+  PENDING // courier hasn't paid out yet
+  PAID
+  PARTIAL
+  NOT_APPLICABLE // returned/refused/cancelled — no money expected
+}
+
+// Where an order came from. This decides which lifecycle it lives in:
+// IMPORT arrives mid-flight (already shipped, nothing to confirm), MANUAL
+// starts at zero and walks the confirmation queue first.
+enum OrderSource {
+  MANUAL
+  IMPORT
+  API
+}
+
+// Owned by the seller/confirmatrice, before the parcel ever moves.
+// Deliberately separate from OrderStatus: "pas de réponse" is a call outcome,
+// not a delivery outcome, and must never pollute the delivery rate.
+enum ConfirmationStatus {
+  TO_CONFIRM
+  CONFIRMED
+  NO_ANSWER // attempted, nobody picked up — retryable
+  CALLBACK // customer asked to be called later
+  CANCELLED // dead before shipping, so it costs nothing
+}
+
+// Why an order died at confirmation. Structured, not free text: "trop cher"
+// running at 30% is a pricing signal, and that only surfaces if it's countable.
+enum CancelReason {
+  TOO_EXPENSIVE
+  CHANGED_MIND
+  WRONG_NUMBER
+  UNREACHABLE // gave up after N attempts
+  DUPLICATE
+  TEST_ORDER
+  OTHER
+}
+
+model Order {
+  id             String        @id @default(cuid())
+  storeId        String
+  reference      String // seller's own id, e.g. CMD-2231
+  customerName   String
+  phone          String
+  city           String
+  address        String?
+  courierId      String?
+  trackingNumber String?
+  totalAmount    Decimal       @db.Decimal(12, 2)
+  source         OrderSource   @default(IMPORT)
+  status         OrderStatus   @default(PENDING)
+  paymentStatus  PaymentStatus @default(PENDING)
+
+  // --- confirmation (pre-ship, manual orders only) ---
+  // Null means "never ours to confirm" — an imported order arrived shipped.
+  confirmationStatus   ConfirmationStatus?
+  confirmationAttempts Int                 @default(0)
+  // When the customer asked to be called back, or when the next retry is due.
+  nextCallAt           DateTime?
+  confirmedAt          DateTime?
+  cancelReason         CancelReason?
+
+  // What the courier actually paid out, once reconciled.
+  amountPaid    Decimal   @default(0) @db.Decimal(12, 2)
+  // Derived from the courier's fee rules at reconciliation time.
+  courierFee    Decimal   @default(0) @db.Decimal(12, 2)
+  orderedAt     DateTime
+  shippedAt     DateTime?
+  deliveredAt   DateTime?
+  paidAt        DateTime?
+  notes         String?
+  importBatchId String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  store         Store                 @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  courier       Courier?              @relation(fields: [courierId], references: [id], onDelete: SetNull)
+  importBatch   ImportBatch?          @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
+  items         OrderItem[]
+  reportLines   CourierReportLine[]
+  discrepancies Discrepancy[]
+  attempts      ConfirmationAttempt[]
+  payouts       Payout[]
+
+  @@unique([storeId, reference])
+  @@index([storeId, status])
+  @@index([storeId, phone])
+  @@index([storeId, trackingNumber])
+  @@index([storeId, orderedAt])
+  @@index([courierId])
+  // Drives the confirmation queue: filter by state, order by callback time.
+  @@index([storeId, confirmationStatus, nextCallAt])
+  @@map("orders")
+}
+
+/// One call. Kept as rows rather than a counter on Order because the owner
+/// needs to know *who* called and when — a number can't answer that, and the
+/// confirmatrice's throughput is how the owner manages her.
+model ConfirmationAttempt {
+  id        String             @id @default(cuid())
+  orderId   String
+  /// Null if the user is later deleted; the attempt still counts.
+  userId    String?
+  outcome   ConfirmationStatus
+  note      String?
+  createdAt DateTime           @default(now())
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  user  User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([orderId])
+  @@index([userId, createdAt])
+  @@map("confirmation_attempts")
+}
+
+model OrderItem {
+  id        String  @id @default(cuid())
+  orderId   String
+  productId String?
+  // Denormalised so historical margins survive a later price change.
+  name      String
+  quantity  Int     @default(1)
+  unitPrice Decimal @db.Decimal(12, 2)
+  unitCost  Decimal @db.Decimal(12, 2)
+
+  order   Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  @@index([orderId])
+  @@index([productId])
+  @@map("order_items")
+}
+
+// ---------------------------------------------------------------- imports
+
+enum ImportType {
+  ORDERS
+  COURIER_REPORT
+}
+
+enum ImportStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  COMPLETED_WITH_ERRORS
+  FAILED
+}
+
+model ImportBatch {
+  id           String       @id @default(cuid())
+  storeId      String
+  type         ImportType
+  // A report file can mix couriers, so this is null for those — the courier
+  // is on each line, not on the batch. Still set for single-courier uploads.
+  courierId    String?
+  fileName     String
+  // The period the seller says this report covers. Re-importing an overlapping
+  // period supersedes the earlier batch, which is what stops a re-upload from
+  // double-counting payments and lying about missing cash.
+  periodStart  DateTime?
+  periodEnd    DateTime?
+  // SHA-256 of the file bytes, to catch an exact re-upload before parsing.
+  fileHash     String?
+  rowCount     Int          @default(0)
+  successCount Int          @default(0)
+  errorCount   Int          @default(0)
+  status       ImportStatus @default(PENDING)
+  // The mapping actually used, kept for audit + re-runs.
+  mapping      Json?
+  createdAt    DateTime     @default(now())
+
+  store         Store               @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  courier       Courier?            @relation(fields: [courierId], references: [id], onDelete: SetNull)
+  errors        ImportError[]
+  orders        Order[]
+  reportLines   CourierReportLine[]
+  discrepancies Discrepancy[]
+
+  @@index([storeId, createdAt])
+  @@index([storeId, type, periodStart])
+  @@map("import_batches")
+}
+
+model ImportError {
+  id        String   @id @default(cuid())
+  batchId   String
+  rowNumber Int
+  message   String
+  rawRow    Json?
+  createdAt DateTime @default(now())
+
+  batch ImportBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+
+  @@index([batchId])
+  @@map("import_errors")
+}
+
+// A saved mapping so a seller maps their messy Excel once, not every week.
+model ColumnMapping {
+  id        String     @id @default(cuid())
+  storeId   String
+  name      String
+  type      ImportType
+  courierId String?
+  mapping   Json
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@index([storeId])
+  @@map("column_mappings")
+}
+
+// ---------------------------------------------------------------- courier reports
+
+// One normalised row of a courier's report: the claim ("we delivered it")
+// that reconciliation checks against the seller's orders.
+model CourierReportLine {
+  id               String       @id @default(cuid())
+  storeId          String
+  batchId          String
+  // Null when the file's courier column named a courier we don't recognise.
+  // The line can still match an order by tracking, and fees come from the
+  // matched order's courier anyway — so an unresolved courier is not fatal.
+  courierId        String?
+  trackingNumber   String?
+  phone            String?
+  reference        String?
+  // Courier's own wording, kept verbatim for debugging bad parses.
+  statusRaw        String?
+  statusNormalized OrderStatus?
+  codAmount        Decimal?     @db.Decimal(12, 2)
+  paidAmount       Decimal?     @db.Decimal(12, 2)
+  fee              Decimal?     @db.Decimal(12, 2)
+  reportDate       DateTime?
+  rawRow           Json?
+  // Set by the reconciliation engine.
+  orderId          String?
+  matchedBy        String? // tracking | phone | reference | manual
+  createdAt        DateTime     @default(now())
+
+  store         Store         @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  batch         ImportBatch   @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  courier       Courier?      @relation(fields: [courierId], references: [id], onDelete: SetNull)
+  order         Order?        @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  discrepancies Discrepancy[]
+
+  @@index([storeId])
+  @@index([batchId])
+  @@index([storeId, trackingNumber])
+  @@index([storeId, phone])
+  @@index([orderId])
+  @@map("courier_report_lines")
+}
+
+// ---------------------------------------------------------------- reconciliation
+
+enum DiscrepancyType {
+  DELIVERED_NOT_PAID // the money screen: delivered per courier, cash never arrived
+  PAID_NOT_DELIVERED
+  AMOUNT_MISMATCH // paid, but not what was expected
+  UNMATCHED_REPORT_LINE // courier reports a parcel with no matching order
+  UNMATCHED_ORDER // shipped order the courier never mentions
+  STUCK_IN_TRANSIT
+  RETURN_FEE_CHARGED
+  LOST
+}
+
+enum DiscrepancyStatus {
+  OPEN
+  RESOLVED
+  IGNORED
+}
+
+model Discrepancy {
+  id            String            @id @default(cuid())
+  storeId       String
+  orderId       String?
+  reportLineId  String?
+  // The import run that produced this. Superseding a batch deletes the
+  // discrepancies it created (cascade), so a re-import doesn't leave stale
+  // "missing cash" alerts from the version it replaced.
+  importBatchId String?
+  type          DiscrepancyType
+  // The MAD at stake — what sums into "3 840 MAD missing".
+  amount        Decimal           @default(0) @db.Decimal(12, 2)
+  status        DiscrepancyStatus @default(OPEN)
+  detail        String?
+  note          String?
+  resolvedAt    DateTime?
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  store       Store              @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  order       Order?             @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  reportLine  CourierReportLine? @relation(fields: [reportLineId], references: [id], onDelete: SetNull)
+  importBatch ImportBatch?       @relation(fields: [importBatchId], references: [id], onDelete: Cascade)
+
+  @@index([storeId, status])
+  @@index([storeId, type])
+  @@index([orderId])
+  @@index([importBatchId])
+  @@map("discrepancies")
+}
+
+// A payment actually received from a courier — the bank-side truth.
+//
+// Transfers here are per-order, not lump sums, so every payout traces back to
+// the one order it settles. That's what lets resolving a discrepancy write a
+// real record instead of just flipping a status flag.
+model Payout {
+  id        String   @id @default(cuid())
+  storeId   String
+  courierId String
+  orderId   String?
+  reference String?
+  amount    Decimal  @db.Decimal(12, 2)
+  paidAt    DateTime
+  note      String?
+  createdAt DateTime @default(now())
+
+  store   Store   @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  courier Courier @relation(fields: [courierId], references: [id], onDelete: Cascade)
+  order   Order?  @relation(fields: [orderId], references: [id], onDelete: SetNull)
+
+  @@index([storeId, paidAt])
+  @@index([courierId])
+  @@index([orderId])
+  @@map("payouts")
+}
+
+// ---------------------------------------------------------------- profit inputs
+
+model AdSpend {
+  id        String   @id @default(cuid())
+  storeId   String
+  productId String?
+  platform  String   @default("facebook")
+  date      DateTime
+  amount    Decimal  @db.Decimal(12, 2)
+  createdAt DateTime @default(now())
+
+  store   Store    @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  product Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  @@index([storeId, date])
+  @@index([productId])
+  @@map("ad_spends")
+}
+
+model BlacklistedCustomer {
+  id           String   @id @default(cuid())
+  storeId      String
+  phone        String
+  reason       String?
+  refusalCount Int      @default(0)
+  createdAt    DateTime @default(now())
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@unique([storeId, phone])
+  @@index([storeId])
+  @@map("blacklisted_customers")
+}

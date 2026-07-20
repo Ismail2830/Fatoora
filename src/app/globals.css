@@ -1,26 +1,229 @@
 @import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * Fatora theme.
+ *
+ * Palette and type are lifted from the Khalas reference in
+ * "Moroccan COD Seller Platform/Khalas.dc.html". shadcn's semantic tokens
+ * (--primary, --card, --border, ...) are re-pointed at that palette below,
+ * so stock shadcn components come out on-brand without per-component
+ * overrides. Prefer the semantic tokens; reach for the raw ones
+ * (night/brand/good/bad/warn) only for things shadcn has no concept of,
+ * like the dark KPI card.
+ *
+ * Three type families do distinct jobs and are not interchangeable:
+ *   sans    Plus Jakarta Sans — all UI text
+ *   display Instrument Serif  — page titles and big KPI numbers
+ *   mono    JetBrains Mono    — money, so digits align down a column
+ */
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --radius: 0.75rem;
+
+  /* Raw Khalas palette. */
+  --canvas: #eceaf2;
+  --surface: #ffffff;
+  --surface-muted: #faf9fd;
+
+  --ink: #17171c;
+  --ink-2: #4a4a55;
+  --ink-3: #66666f;
+  --ink-4: #8a8a94;
+
+  --night: #0f0f12;
+  --night-2: #18181d;
+  --night-text: #c8c8d0;
+  --night-muted: #8a8a95;
+
+  --brand: #7b5cf0;
+  --brand-dark: #5f3fd6;
+  --brand-light: #a78bfa;
+  --brand-pale: #c9bafb;
+  --brand-tint: #f1eefc;
+  --brand-track: #f0eef7;
+
+  --good: #3ecf8e;
+  --good-ink: #1f9d63;
+  --good-tint: #e7f6ee;
+
+  --bad: #ff8a9b;
+  --bad-ink: #d1495b;
+  --bad-tint: #fbeaec;
+
+  --warn: #ffcf6b;
+  --warn-ink: #a9761a;
+  --warn-tint: #fdf3e0;
+
+  --hair: rgba(15, 15, 18, 0.07);
+  --hair-strong: rgba(15, 15, 18, 0.12);
+
+  /* shadcn semantic tokens mapped onto the palette above. */
+  --background: var(--canvas);
+  --foreground: var(--ink);
+  --card: var(--surface);
+  --card-foreground: var(--ink);
+  --popover: var(--surface);
+  --popover-foreground: var(--ink);
+  /* Primary is near-black, not purple — in this design purple is an accent,
+     and every call-to-action in the reference is the black pill. */
+  --primary: var(--night);
+  --primary-foreground: #ffffff;
+  --secondary: var(--surface);
+  --secondary-foreground: var(--ink);
+  --muted: var(--surface-muted);
+  --muted-foreground: var(--ink-3);
+  --accent: var(--brand-tint);
+  --accent-foreground: var(--brand-dark);
+  --destructive: var(--bad-ink);
+  --destructive-foreground: #ffffff;
+  --border: var(--hair);
+  --input: var(--hair-strong);
+  --ring: var(--brand);
+
+  --chart-1: var(--brand);
+  --chart-2: var(--good);
+  --chart-3: var(--warn);
+  --chart-4: var(--bad);
+  --chart-5: var(--brand-pale);
+
+  --sidebar: var(--surface);
+  --sidebar-foreground: var(--ink);
+  --sidebar-primary: var(--brand);
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: var(--brand-tint);
+  --sidebar-accent-foreground: var(--brand-dark);
+  --sidebar-border: var(--hair);
+  --sidebar-ring: var(--brand);
 }
 
 @theme inline {
+  --font-sans: var(--font-jakarta), system-ui, sans-serif;
+  --font-display: var(--font-instrument), Georgia, serif;
+  --font-mono: var(--font-jetbrains), ui-monospace, monospace;
+  --font-heading: var(--font-jakarta), system-ui, sans-serif;
+
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  /* Brand-specific colours with no shadcn equivalent. */
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-surface-muted: var(--surface-muted);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-ink-4: var(--ink-4);
+  --color-night: var(--night);
+  --color-night-2: var(--night-2);
+  --color-night-text: var(--night-text);
+  --color-night-muted: var(--night-muted);
+  --color-brand: var(--brand);
+  --color-brand-dark: var(--brand-dark);
+  --color-brand-light: var(--brand-light);
+  --color-brand-pale: var(--brand-pale);
+  --color-brand-tint: var(--brand-tint);
+  --color-brand-track: var(--brand-track);
+  --color-good: var(--good);
+  --color-good-ink: var(--good-ink);
+  --color-good-tint: var(--good-tint);
+  --color-bad: var(--bad);
+  --color-bad-ink: var(--bad-ink);
+  --color-bad-tint: var(--bad-tint);
+  --color-warn: var(--warn);
+  --color-warn-ink: var(--warn-ink);
+  --color-warn-tint: var(--warn-tint);
+  --color-hair: var(--hair);
+  --color-hair-strong: var(--hair-strong);
+
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  html {
+    @apply font-sans;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(15, 15, 18, 0.16);
+    border-radius: 8px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(15, 15, 18, 0.28);
+    background-clip: content-box;
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+/* Instrument Serif ships only a 400 weight; requesting bold gets you an ugly
+   synthetic one, so pin the weight here rather than trusting call sites. */
+@utility display {
+  font-family: var(--font-display);
+  font-weight: 400;
+  letter-spacing: -0.01em;
+}
+
+/* Money and other figures that must line up down a column. */
+@utility tabular {
+  font-variant-numeric: tabular-nums;
 }
