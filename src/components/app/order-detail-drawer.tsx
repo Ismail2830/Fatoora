@@ -27,7 +27,10 @@ import {
   paymentStatusTone,
 } from "@/lib/status";
 import { getOrderDetailForDrawer, type OrderDetail } from "@/app/app/orders/detail-action";
+import { confirmDelivery, recordPayment } from "@/app/app/orders/actions";
 import { resolveWithPayment, acknowledgeDiscrepancy, ignoreDiscrepancy } from "@/app/app/reconciliation/actions";
+
+const TERMINAL_NON_DELIVERED = new Set(["RETURNED", "REFUSED", "LOST", "CANCELLED"]);
 
 /**
  * The one place a seller compares "what I shipped" against "what the courier
@@ -142,6 +145,12 @@ function DrawerBody({
         <Field label="Reçu" value={formatMAD(order.amountPaid)} mono />
       </div>
 
+      {/* Paid on delivery: payment only ever becomes available below once
+          this order is DELIVERED — confirmed manually here, or already set by
+          an imported courier report. Nothing stops a payment from being
+          recorded against a parcel nobody has confirmed arrived. */}
+      <DeliveryAndPayment order={order} onChanged={onChanged} />
+
       {history.blacklisted && (
         <Alert tone="bad">
           <strong>Client blacklisté.</strong> {history.blacklisted.reason ?? "Historique de refus."}
@@ -232,6 +241,148 @@ function DrawerBody({
           refusée{history.refused > 1 ? "s" : ""}
         </p>
       )}
+    </div>
+  );
+}
+
+/**
+ * Paid on delivery, made concrete: nothing below the confirm button exists
+ * until the order is DELIVERED — there is no path to recordPayment for a
+ * parcel still in transit. That gate is enforced again server-side (the
+ * whole point would be lost if it weren't), this is just the same rule
+ * reflected in what's rendered.
+ */
+function DeliveryAndPayment({
+  order,
+  onChanged,
+}: {
+  order: OrderDetail["order"];
+  onChanged: () => void;
+}) {
+  const router = useRouter();
+  const [pending, startTransition] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+  const [confirmed, setConfirmed] = useState(false);
+
+  function confirm() {
+    setError(null);
+    const fd = new FormData();
+    fd.set("orderId", order.id);
+    startTransition(async () => {
+      const result = await confirmDelivery(fd);
+      if (!result.ok) {
+        setError(result.error);
+        return;
+      }
+      setConfirmed(true);
+      router.refresh();
+      onChanged();
+    });
+  }
+
+  // Not shipped yet: nothing to confirm, nothing to pay.
+  if (!order.shippedAt) return null;
+
+  // A terminal outcome that isn't delivery — returned, refused, lost,
+  // cancelled. No COD was ever collected, so there's nothing to record.
+  if (TERMINAL_NON_DELIVERED.has(order.status) && !confirmed) return null;
+
+  if (order.status !== "DELIVERED" && !confirmed) {
+    return (
+      <div className="rounded-xl border border-hair bg-surface-muted p-3.5">
+        <p className="text-[13px] font-semibold mb-1">Livraison pas encore confirmée</p>
+        <p className="text-xs text-ink-4 mb-3">
+          Le driver a appelé, ou le client a confirmé sur WhatsApp ? Confirme ici pour
+          pouvoir enregistrer le paiement.
+        </p>
+        {error && <p className="text-xs text-bad-ink mb-2">{error}</p>}
+        <Button size="sm" disabled={pending} onClick={confirm}>
+          {pending ? "…" : "Marquer comme livré"}
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-xl border border-hair bg-surface-muted p-3.5">
+      <p className="text-[13px] font-semibold mb-1">
+        Livré
+        {order.deliveryConfirmedByName
+          ? ` — confirmé manuellement par ${order.deliveryConfirmedByName}`
+          : " — confirmé par rapport courier"}
+      </p>
+      <PaymentForm orderId={order.id} onChanged={onChanged} />
+    </div>
+  );
+}
+
+function PaymentForm({ orderId, onChanged }: { orderId: string; onChanged: () => void }) {
+  const router = useRouter();
+  const [pending, startTransition] = useTransition();
+  const [amount, setAmount] = useState("");
+  const [reference, setReference] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [justSaved, setJustSaved] = useState(false);
+
+  function submit() {
+    setError(null);
+    if (!amount.trim()) {
+      setError("Montant requis.");
+      return;
+    }
+    const fd = new FormData();
+    fd.set("orderId", orderId);
+    fd.set("amount", amount);
+    if (reference.trim()) fd.set("reference", reference.trim());
+
+    startTransition(async () => {
+      const result = await recordPayment(fd);
+      if (!result.ok) {
+        setError(result.error);
+        return;
+      }
+      setAmount("");
+      setReference("");
+      setJustSaved(true);
+      router.refresh();
+      onChanged();
+    });
+  }
+
+  return (
+    <div className="mt-2 space-y-2">
+      <div className="grid grid-cols-2 gap-2">
+        <div>
+          <Label className="text-xs">Montant reçu (MAD)</Label>
+          <Input
+            value={amount}
+            onChange={(e) => {
+              setAmount(e.target.value);
+              setJustSaved(false);
+            }}
+            inputMode="decimal"
+            placeholder="0"
+            className="font-mono h-8"
+          />
+        </div>
+        <div>
+          <Label className="text-xs">Référence (optionnel)</Label>
+          <Input
+            value={reference}
+            onChange={(e) => setReference(e.target.value)}
+            className="h-8"
+          />
+        </div>
+      </div>
+
+      {error && <p className="text-xs text-bad-ink">{error}</p>}
+      {justSaved && !error && (
+        <p className="text-xs text-good-ink">Versement enregistré.</p>
+      )}
+
+      <Button size="sm" disabled={pending} onClick={submit}>
+        {pending ? "…" : "Enregistrer un paiement"}
+      </Button>
     </div>
   );
 }

@@ -4,9 +4,12 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 
 import { db } from "@/lib/db";
-import { requireSession } from "@/lib/session";
+import { requireMoneyAccess, requireSession } from "@/lib/session";
 import { getCustomerHistory } from "@/lib/queries/confirmation";
 import { canonicalCity, foldText, normalizePhone } from "@/lib/reconciliation/normalize";
+import { resolveFeeRule } from "@/lib/reconciliation/fees";
+import { applyPayment } from "@/lib/reconciliation/resolve";
+import { round } from "@/lib/money";
 
 /**
  * Manual order entry — the WhatsApp/DM/phone path.
@@ -170,6 +173,90 @@ async function findProductByName(storeId: string, name: string) {
   return partial.length === 1 ? partial[0] : null;
 }
 
+export type CourierQuote = {
+  deliveredFee: number;
+  returnFee: number;
+  codPercent: number;
+  /** null when there's too little history to trust an average — never a guess. */
+  etaDays: number | null;
+  etaSampleSize: number;
+};
+
+/**
+ * What assigning this courier will actually cost and how long it usually
+ * takes — shown before the seller confirms, not discovered after the fact.
+ *
+ * ETA comes from this store's own delivered orders with this courier, never
+ * a claimed SLA: a courier's stated "48h" and its actual pace are often two
+ * different numbers, and only one of them is true. City-scoped first (a
+ * remote city is slower), falling back to the courier's whole history when a
+ * city has too few samples — and to null, not a fabricated figure, when even
+ * that's too thin to mean anything.
+ */
+export async function getCourierQuote(courierId: string, city: string): Promise<CourierQuote | null> {
+  const session = await requireSession();
+
+  const courier = await db.courier.findFirst({
+    where: { id: courierId, storeId: session.storeId },
+    select: {
+      feeRules: {
+        select: { city: true, deliveredFee: true, returnFee: true, codPercent: true },
+      },
+    },
+  });
+  if (!courier) return null;
+
+  const canonical = canonicalCity(city);
+  const rule = resolveFeeRule(courier.feeRules, canonical);
+
+  const MIN_SAMPLE = 3;
+
+  const cityDeliveries = canonical
+    ? await db.order.findMany({
+        where: {
+          storeId: session.storeId,
+          courierId,
+          city: canonical,
+          status: "DELIVERED",
+          shippedAt: { not: null },
+          deliveredAt: { not: null },
+        },
+        select: { shippedAt: true, deliveredAt: true },
+        take: 50,
+      })
+    : [];
+
+  const pool =
+    cityDeliveries.length >= MIN_SAMPLE
+      ? cityDeliveries
+      : await db.order.findMany({
+          where: {
+            storeId: session.storeId,
+            courierId,
+            status: "DELIVERED",
+            shippedAt: { not: null },
+            deliveredAt: { not: null },
+          },
+          select: { shippedAt: true, deliveredAt: true },
+          take: 100,
+        });
+
+  const days = pool.map(
+    (o) => (o.deliveredAt!.getTime() - o.shippedAt!.getTime()) / 86_400_000,
+  );
+
+  return {
+    deliveredFee: round(rule.deliveredFee).toNumber(),
+    returnFee: round(rule.returnFee).toNumber(),
+    codPercent: round(rule.codPercent).toNumber(),
+    etaDays:
+      days.length >= MIN_SAMPLE
+        ? Math.round((days.reduce((a, b) => a + b, 0) / days.length) * 10) / 10
+        : null,
+    etaSampleSize: days.length,
+  };
+}
+
 const assignSchema = z.object({
   orderId: z.string().min(1),
   courierId: z.string().min(1),
@@ -243,6 +330,158 @@ export async function getCouriers() {
     select: { id: true, name: true },
     orderBy: { name: "asc" },
   });
+}
+
+// ---------------------------------------------------------------- delivery confirmation
+
+const TERMINAL_STATUSES = ["DELIVERED", "RETURNED", "REFUSED", "LOST", "CANCELLED"];
+
+export type ConfirmDeliveryResult = { ok: true } | { ok: false; error: string };
+
+/**
+ * "Marquer comme livré" — the manual half of paid-on-delivery.
+ *
+ * There's no live courier API yet, so today this is a human clicking a
+ * button because a driver called or a customer confirmed on WhatsApp. It's
+ * deliberately built to be replaceable later by nothing more than a second
+ * caller: a driver-facing app confirming delivery would call this exact same
+ * action, so nothing downstream (payment gating, the audit trail) needs to
+ * change when that ships — only who's allowed to call it.
+ *
+ * `deliveryConfirmedById` records that this came from a human click, not a
+ * courier report. It's provenance, not authority: if a courier report later
+ * arrives and disagrees, the reconciliation engine still overrides status —
+ * see the RETURNED/REFUSED/LOST branches in engine.ts, which now flag rather
+ * than silently erase a payment recorded against this kind of manual
+ * confirmation.
+ */
+export async function confirmDelivery(formData: FormData): Promise<ConfirmDeliveryResult> {
+  const session = await requireSession();
+  const orderId = String(formData.get("orderId") ?? "");
+  if (!orderId) return { ok: false, error: "Commande manquante." };
+
+  const order = await db.order.findFirst({
+    where: { id: orderId, storeId: session.storeId },
+    select: { id: true, status: true, shippedAt: true },
+  });
+  if (!order) return { ok: false, error: "Commande introuvable." };
+  if (!order.shippedAt) {
+    return { ok: false, error: "Assigne d'abord un courier — cette commande n'a pas encore expédié." };
+  }
+  if (TERMINAL_STATUSES.includes(order.status)) {
+    return { ok: false, error: "Cette commande a déjà un statut final." };
+  }
+
+  await db.order.update({
+    where: { id: order.id },
+    data: {
+      status: "DELIVERED",
+      deliveredAt: new Date(),
+      deliveryConfirmedById: session.userId,
+    },
+  });
+
+  revalidatePath("/app/orders");
+  revalidatePath("/app");
+  return { ok: true };
+}
+
+const recordPaymentSchema = z.object({
+  orderId: z.string().min(1),
+  amount: z.coerce.number().positive("Montant invalide."),
+  reference: z.string().trim().max(60).optional(),
+  note: z.string().trim().max(500).optional(),
+});
+
+export type RecordPaymentResult = { ok: true } | { ok: false; error: string };
+
+/**
+ * Record a payment for an order directly — the general case, not gated
+ * behind an existing Discrepancy the way resolveWithPayment is. This is
+ * "paid on delivery": the guard below is the entire point of building
+ * confirmDelivery first, since without it there'd be nothing stopping a
+ * payment from being recorded on a parcel nobody has confirmed arrived.
+ *
+ * Reuses the exact same applyPayment/Payout mechanics as the reconciliation
+ * drawer's resolve flow — additive against whatever's already recorded, never
+ * a silent overwrite — so a Payout row here and one written by an eventual
+ * courier-report import are indistinguishable in the ledger.
+ */
+export async function recordPayment(formData: FormData): Promise<RecordPaymentResult> {
+  const session = await requireMoneyAccess();
+  const parsed = recordPaymentSchema.safeParse({
+    orderId: formData.get("orderId"),
+    amount: formData.get("amount"),
+    reference: formData.get("reference") || undefined,
+    note: formData.get("note") || undefined,
+  });
+  if (!parsed.success) return { ok: false, error: parsed.error.issues[0].message };
+
+  const order = await db.order.findFirst({
+    where: { id: parsed.data.orderId, storeId: session.storeId },
+    select: {
+      id: true,
+      status: true,
+      courierId: true,
+      totalAmount: true,
+      courierFee: true,
+      amountPaid: true,
+    },
+  });
+  if (!order) return { ok: false, error: "Commande introuvable." };
+  if (order.status !== "DELIVERED") {
+    return {
+      ok: false,
+      error: "Confirme d'abord la livraison avant d'enregistrer un paiement.",
+    };
+  }
+  if (!order.courierId) return { ok: false, error: "Aucun courier assigné à cette commande." };
+
+  const expected = round(order.totalAmount.sub(order.courierFee));
+  const { amountPaid, paymentStatus } = applyPayment({
+    expected,
+    alreadyPaid: order.amountPaid,
+    newAmount: parsed.data.amount,
+  });
+
+  const paidAtDate = new Date();
+
+  await db.$transaction(async (tx) => {
+    await tx.order.update({
+      where: { id: order.id },
+      data: { amountPaid, paymentStatus, paidAt: paidAtDate },
+    });
+
+    await tx.payout.create({
+      data: {
+        storeId: session.storeId,
+        courierId: order.courierId!,
+        orderId: order.id,
+        amount: parsed.data.amount,
+        paidAt: paidAtDate,
+        reference: parsed.data.reference,
+        note: parsed.data.note,
+      },
+    });
+
+    // A bonus, not a requirement: if reconciliation already raised an alert
+    // for this exact order, this payment answers it — closing it here means
+    // the seller doesn't also have to go clear it by hand in Réconciliation.
+    await tx.discrepancy.updateMany({
+      where: {
+        storeId: session.storeId,
+        orderId: order.id,
+        status: "OPEN",
+        type: { in: ["DELIVERED_NOT_PAID", "AMOUNT_MISMATCH"] },
+      },
+      data: { status: "RESOLVED", resolvedAt: new Date() },
+    });
+  });
+
+  revalidatePath("/app/orders");
+  revalidatePath("/app/reconciliation");
+  revalidatePath("/app");
+  return { ok: true };
 }
 
 export type PhoneCheck = {

@@ -107,6 +107,7 @@ export function OrdersTable({
                 <td className="py-3 pr-3" onClick={(e) => e.stopPropagation()}>
                   <CourierCell
                     orderId={row.id}
+                    city={row.city}
                     courierName={row.courierName}
                     trackingNumber={row.trackingNumber}
                     shipped={row.shipped}

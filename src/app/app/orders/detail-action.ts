@@ -18,6 +18,10 @@ export type OrderDetail = {
     status: OrderStatus;
     paymentStatus: PaymentStatus;
     trackingNumber: string | null;
+    /** Set once a courier is assigned and tracking recorded — see CourierCell. */
+    shippedAt: string | null;
+    /** Set only via a manual "Marquer comme livré" click, never a courier report. */
+    deliveryConfirmedByName: string | null;
     courier: { id: string; name: string } | null;
     reportLines: {
       id: string;
@@ -72,6 +76,8 @@ export async function getOrderDetailForDrawer(orderId: string): Promise<OrderDet
       status: order.status,
       paymentStatus: order.paymentStatus,
       trackingNumber: order.trackingNumber,
+      shippedAt: order.shippedAt?.toISOString() ?? null,
+      deliveryConfirmedByName: order.deliveryConfirmedBy?.name ?? null,
       courier: order.courier,
       reportLines: order.reportLines.map((l) => ({
         id: l.id,

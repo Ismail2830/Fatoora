@@ -1,7 +1,7 @@
 import Link from "next/link";
 
 import { requireMoneyAccess } from "@/lib/session";
-import { getDashboardData } from "@/lib/queries/dashboard";
+import { getDashboardData, parseMonthParam } from "@/lib/queries/dashboard";
 import { formatAmount, formatMAD, toNumber } from "@/lib/money";
 import { orderStatusLabel, orderStatusTone, discrepancyTone } from "@/lib/status";
 import { Badge } from "@/components/ui/badge";
@@ -9,11 +9,27 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { WeekBars } from "@/components/app/week-bars";
 
-export default async function DashboardPage() {
+export default async function DashboardPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ month?: string }>;
+}) {
   // The dashboard is all money — a confirmatrice is redirected to her queue.
   const session = await requireMoneyAccess();
+  const { month } = await searchParams;
 
-  const data = await getDashboardData(session.storeId);
+  const now = new Date();
+  const selectedMonth = parseMonthParam(month, now);
+  const data = await getDashboardData(session.storeId, now, selectedMonth);
+  const { isCurrentMonth, monthLabel } = data;
+
+  const collectedLabel = isCurrentMonth ? "Encaissé ce mois" : `Encaissé en ${monthLabel}`;
+  const transitSuffix = isCurrentMonth ? "" : ` en ${monthLabel}`;
+  const deliverySuffix = isCurrentMonth ? "" : ` (${monthLabel})`;
+  const courierSplitLabel = isCurrentMonth ? "Commandes en cours" : `Commandes de ${monthLabel}`;
+  const weekCardTitle = isCurrentMonth ? "Encaissements de la semaine" : `Encaissements de ${monthLabel}`;
+  const weekCardSubtitle = isCurrentMonth ? "cette semaine" : monthLabel;
+
   const firstName = session.name.split(" ")[0] || "vendeur";
 
   const today = new Intl.DateTimeFormat("fr-FR", {
@@ -51,12 +67,12 @@ export default async function DashboardPage() {
               <span className="text-[22px] text-brand">MAD</span>
             </p>
             <p className="text-[13px] text-night-muted mb-[18px]">
-              sur {data.cashInTransit.orderCount} commandes livrées, pas encore versées
+              sur {data.cashInTransit.orderCount} commandes livrées, pas encore versées{transitSuffix}
             </p>
 
             <div className="flex gap-6">
               <div>
-                <p className="text-xs text-night-muted">Encaissé ce mois</p>
+                <p className="text-xs text-night-muted">{collectedLabel}</p>
                 <p className="font-mono text-[17px] text-good mt-0.5 tabular">
                   {formatMAD(data.collectedThisMonth)}
                 </p>
@@ -73,7 +89,7 @@ export default async function DashboardPage() {
 
         <Card className="p-5">
           <div className="flex items-center justify-between mb-2.5">
-            <span className="text-[13.5px] text-ink-3">Taux de livraison</span>
+            <span className="text-[13.5px] text-ink-3">Taux de livraison{deliverySuffix}</span>
           </div>
           <p className="display text-[44px] leading-none">
             {Math.round(data.deliveryRate.percent)}
@@ -99,7 +115,7 @@ export default async function DashboardPage() {
             {data.alertCount > 0 && <Badge variant="bad">Urgent</Badge>}
           </div>
           <p className="display text-[44px] leading-none">{data.alertCount}</p>
-          <p className="text-[12.5px] text-ink-4 mt-2 mb-3">livré selon courier, pas payé</p>
+          <p className="text-[12.5px] text-ink-4 mt-2 mb-3">livré selon courier, pas payé{deliverySuffix}</p>
           <Button asChild variant="outline" size="sm" className="w-full mt-auto">
             <Link href="/app/reconciliation">Voir les écarts →</Link>
           </Button>
@@ -110,12 +126,12 @@ export default async function DashboardPage() {
         <Card className="p-[22px]">
           <div className="flex items-start justify-between mb-1.5">
             <div>
-              <p className="font-bold text-[17px]">Encaissements de la semaine</p>
+              <p className="font-bold text-[17px]">{weekCardTitle}</p>
               <p className="text-[13px] text-ink-3 mt-1 flex items-center gap-1.5">
                 <span className="bg-night text-white font-mono text-[11.5px] font-semibold px-2 py-0.5 rounded-md">
                   {formatMAD(data.weekBars.reduce((n, b) => n + toNumber(b.amount), 0))}
                 </span>
-                cette semaine
+                {weekCardSubtitle}
               </p>
             </div>
           </div>
@@ -124,10 +140,12 @@ export default async function DashboardPage() {
 
         <Card className="p-[22px]">
           <p className="font-bold text-[17px]">Répartition par courier</p>
-          <p className="text-[13px] text-ink-3 mb-4">Commandes en cours</p>
+          <p className="text-[13px] text-ink-3 mb-4">{courierSplitLabel}</p>
 
           {data.courierSplit.length === 0 ? (
-            <p className="text-sm text-ink-4">Aucune commande en cours.</p>
+            <p className="text-sm text-ink-4">
+              {isCurrentMonth ? "Aucune commande en cours." : "Aucune commande ce mois-là."}
+            </p>
           ) : (
             <div className="flex flex-col gap-4">
               {data.courierSplit.map((c) => (
@@ -152,7 +170,9 @@ export default async function DashboardPage() {
       <div className="grid gap-4 lg:grid-cols-[1.5fr_1fr]">
         <Card className="p-[22px]">
           <div className="flex items-center justify-between mb-4">
-            <p className="font-bold text-[17px]">Commandes récentes</p>
+            <p className="font-bold text-[17px]">
+              {isCurrentMonth ? "Commandes récentes" : `Commandes de ${monthLabel}`}
+            </p>
             <Link
               href="/app/orders"
               className="text-[13px] font-semibold text-brand hover:text-brand-dark"
@@ -163,7 +183,9 @@ export default async function DashboardPage() {
 
           {data.recentOrders.length === 0 ? (
             <EmptyHint>
-              Importe tes commandes pour voir ton cash apparaître ici.
+              {isCurrentMonth
+                ? "Importe tes commandes pour voir ton cash apparaître ici."
+                : "Aucune commande ce mois-là."}
             </EmptyHint>
           ) : (
             <ul className="flex flex-col">
@@ -190,7 +212,9 @@ export default async function DashboardPage() {
         </Card>
 
         <Card className="p-[22px]">
-          <p className="font-bold text-[17px]">À régler aujourd&apos;hui</p>
+          <p className="font-bold text-[17px]">
+            {isCurrentMonth ? "À régler aujourd'hui" : `Écarts de ${monthLabel}`}
+          </p>
           <p className="text-[13px] text-ink-3 mb-4">Écarts prioritaires</p>
 
           {data.topAlerts.length === 0 ? (

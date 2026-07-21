@@ -19,6 +19,12 @@ export type EngineOrder = {
   paymentStatus: PaymentStatus;
   shippedAt?: Date | null;
   orderedAt: Date;
+  /**
+   * What's already recorded on the order — usually from a manual "Marquer
+   * payé" entered before any courier report existed. Defaults to 0 so every
+   * existing caller keeps working unchanged.
+   */
+  amountPaid?: Decimal | number | string;
 };
 
 export type EngineLine = {
@@ -134,6 +140,11 @@ export function reconcile(input: ReconcileInput): ReconcileResult {
       ? null
       : money(line.paidAmount);
     const paid = reportedPaid ?? new Decimal(0);
+    // What's already on the order — typically a manual "Marquer payé" entered
+    // before this report ever existed. See the RETURNED/REFUSED/LOST branches:
+    // a courier report is authoritative on outcome, but it must never silently
+    // erase money someone already confirmed receiving.
+    const alreadyPaid = money(order.amountPaid ?? 0);
 
     let paymentStatus: PaymentStatus;
     let paidAt: Date | null = null;
@@ -168,17 +179,33 @@ export function reconcile(input: ReconcileInput): ReconcileResult {
             `${order.reference} — attendu ${fees.expectedPayout.toFixed(2)} MAD ` +
             `après frais, reçu ${paid.toFixed(2)} MAD.`,
         });
-        if (gap.isPositive()) missingAmount = missingAmount.plus(gap);
+        if (gap.greaterThan(0)) missingAmount = missingAmount.plus(gap);
       }
     } else if (status === "RETURNED" || status === "REFUSED") {
       paymentStatus = "NOT_APPLICABLE";
-      if (fees.returnFee.isPositive()) {
+      if (fees.returnFee.greaterThan(0)) {
         discrepancies.push({
           type: "RETURN_FEE_CHARGED",
           orderId: order.id,
           reportLineId: line.id,
           amount: fees.returnFee,
           detail: `${order.reference} — ${statusWord(status)} à ${order.city}, frais de retour ${fees.returnFee.toFixed(2)} MAD.`,
+        });
+      }
+      // Someone recorded a payment — often a manual entry made after a phone
+      // confirmation of delivery, before this report existed — but the
+      // courier's own report says the parcel never actually delivered. That
+      // money was received in good faith against a parcel that came back, and
+      // it must surface loudly rather than be silently zeroed out below.
+      if (alreadyPaid.greaterThan(0)) {
+        discrepancies.push({
+          type: "PAID_NOT_DELIVERED",
+          orderId: order.id,
+          reportLineId: line.id,
+          amount: alreadyPaid,
+          detail:
+            `${order.reference} — ${alreadyPaid.toFixed(2)} MAD déjà enregistrés, mais le ` +
+            `colis est ${statusWord(status)} selon le courier.`,
         });
       }
     } else if (status === "LOST") {
@@ -191,7 +218,18 @@ export function reconcile(input: ReconcileInput): ReconcileResult {
         detail: `${order.reference} — colis déclaré perdu par le courier.`,
       });
       missingAmount = missingAmount.plus(money(order.totalAmount));
-    } else if (paid.isPositive()) {
+      // Same contradiction as above: a recorded payment against a parcel the
+      // courier now says never arrived at all.
+      if (alreadyPaid.greaterThan(0)) {
+        discrepancies.push({
+          type: "PAID_NOT_DELIVERED",
+          orderId: order.id,
+          reportLineId: line.id,
+          amount: alreadyPaid,
+          detail: `${order.reference} — ${alreadyPaid.toFixed(2)} MAD déjà enregistrés, mais le colis est déclaré perdu.`,
+        });
+      }
+    } else if (paid.greaterThan(0)) {
       // Money arrived for something the courier doesn't call delivered.
       paymentStatus = "PAID";
       paidAt = line.reportDate ?? now;
@@ -220,11 +258,21 @@ export function reconcile(input: ReconcileInput): ReconcileResult {
       }
     }
 
+    // RETURNED/REFUSED/LOST report nothing paid (`paid` is 0 here, since these
+    // couriers don't send a payout figure for a parcel that never delivered).
+    // Writing that 0 over the order would erase a manually-recorded payment
+    // the moment a real report arrives — the discrepancy above says so loudly,
+    // but the number on the order must survive as the audit fact it is.
+    const recordedAmount =
+      (status === "RETURNED" || status === "REFUSED" || status === "LOST") && alreadyPaid.greaterThan(0)
+        ? alreadyPaid
+        : paid;
+
     orderUpdates.push({
       orderId: order.id,
       status,
       paymentStatus,
-      amountPaid: paid,
+      amountPaid: recordedAmount,
       courierFee: fees.total,
       deliveredAt: status === "DELIVERED" ? (line.reportDate ?? now) : null,
       paidAt,

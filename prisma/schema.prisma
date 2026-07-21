@@ -14,14 +14,15 @@ datasource db {
 // ---------------------------------------------------------------- accounts
 
 model User {
-  id           String                @id @default(cuid())
-  email        String                @unique
-  passwordHash String
-  name         String
-  createdAt    DateTime              @default(now())
-  updatedAt    DateTime              @updatedAt
-  memberships  Membership[]
-  attempts     ConfirmationAttempt[]
+  id                  String                @id @default(cuid())
+  email               String                @unique
+  passwordHash        String
+  name                String
+  createdAt           DateTime              @default(now())
+  updatedAt           DateTime              @updatedAt
+  memberships         Membership[]
+  attempts            ConfirmationAttempt[]
+  deliveriesConfirmed Order[]               @relation("DeliveryConfirmations")
 
   @@map("users")
 }
@@ -218,26 +219,36 @@ model Order {
   cancelReason         CancelReason?
 
   // What the courier actually paid out, once reconciled.
-  amountPaid    Decimal   @default(0) @db.Decimal(12, 2)
+  amountPaid            Decimal   @default(0) @db.Decimal(12, 2)
   // Derived from the courier's fee rules at reconciliation time.
-  courierFee    Decimal   @default(0) @db.Decimal(12, 2)
-  orderedAt     DateTime
-  shippedAt     DateTime?
-  deliveredAt   DateTime?
-  paidAt        DateTime?
-  notes         String?
-  importBatchId String?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  courierFee            Decimal   @default(0) @db.Decimal(12, 2)
+  orderedAt             DateTime
+  shippedAt             DateTime?
+  deliveredAt           DateTime?
+  /// Set only when a human clicked "Marquer comme livré" — a driver's call or
+  /// a WhatsApp confirmation, before any courier report exists. Null when
+  /// DELIVERED came from an imported report instead. This is what lets
+  /// "paid on delivery" work today without a live courier API: it's the seat
+  /// a future delivery-driver app fills later, so a manual click and an app
+  /// confirmation are indistinguishable to everything downstream. A courier
+  /// report arriving afterwards still overrides status per the reconciliation
+  /// engine's existing rule — this field records provenance, not authority.
+  deliveryConfirmedById String?
+  paidAt                DateTime?
+  notes                 String?
+  importBatchId         String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 
-  store         Store                 @relation(fields: [storeId], references: [id], onDelete: Cascade)
-  courier       Courier?              @relation(fields: [courierId], references: [id], onDelete: SetNull)
-  importBatch   ImportBatch?          @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
-  items         OrderItem[]
-  reportLines   CourierReportLine[]
-  discrepancies Discrepancy[]
-  attempts      ConfirmationAttempt[]
-  payouts       Payout[]
+  store               Store                 @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  courier             Courier?              @relation(fields: [courierId], references: [id], onDelete: SetNull)
+  importBatch         ImportBatch?          @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
+  deliveryConfirmedBy User?                 @relation("DeliveryConfirmations", fields: [deliveryConfirmedById], references: [id], onDelete: SetNull)
+  items               OrderItem[]
+  reportLines         CourierReportLine[]
+  discrepancies       Discrepancy[]
+  attempts            ConfirmationAttempt[]
+  payouts             Payout[]
 
   @@unique([storeId, reference])
   @@index([storeId, status])

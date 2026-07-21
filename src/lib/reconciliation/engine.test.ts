@@ -238,3 +238,82 @@ test("a whole batch reconciles into one set of totals", () => {
   // Only the unpaid delivery is real missing cash.
   assert.equal(result.stats.missingAmount.toNumber(), 945);
 });
+
+// ---- a manual payment later contradicted by the courier's own report -----
+//
+// The new "Marquer comme livré" flow lets a seller record a payment before
+// any courier report exists (a driver's call, a WhatsApp confirmation). If
+// the report later disagrees — the parcel actually came back — the engine
+// must neither destroy that payment record nor stay silent about it.
+
+test("a manual payment survives a later RETURNED report, flagged not erased", () => {
+  const result = run(
+    [order({ amountPaid: 945 })],
+    [line({ statusNormalized: "RETURNED" })],
+  );
+  assert.deepEqual(typesOf(result), ["RETURN_FEE_CHARGED", "PAID_NOT_DELIVERED"]);
+  const paidNotDelivered = result.discrepancies.find((d) => d.type === "PAID_NOT_DELIVERED")!;
+  assert.equal(paidNotDelivered.amount.toNumber(), 945);
+  // The order must still show the 945 was received — zeroing it here would
+  // destroy the one fact anyone has about where that money went.
+  assert.equal(result.orderUpdates[0].amountPaid.toNumber(), 945);
+  assert.equal(result.orderUpdates[0].paymentStatus, "NOT_APPLICABLE");
+});
+
+test("the same contradiction is flagged for REFUSED", () => {
+  const result = run(
+    [order({ amountPaid: 500 })],
+    [line({ statusNormalized: "REFUSED" })],
+  );
+  assert.ok(typesOf(result).includes("PAID_NOT_DELIVERED"));
+  assert.equal(result.orderUpdates[0].amountPaid.toNumber(), 500);
+});
+
+test("and for LOST", () => {
+  const result = run(
+    [order({ amountPaid: 1000 })],
+    [line({ statusNormalized: "LOST" })],
+  );
+  assert.deepEqual(typesOf(result), ["LOST", "PAID_NOT_DELIVERED"]);
+  assert.equal(result.orderUpdates[0].amountPaid.toNumber(), 1000);
+});
+
+test("a genuine return with nothing manually recorded stays a simple return fee", () => {
+  // No prior payment on the order — must not invent a PAID_NOT_DELIVERED out
+  // of nothing.
+  const result = run([order({ amountPaid: 0 })], [line({ statusNormalized: "RETURNED" })]);
+  assert.deepEqual(typesOf(result), ["RETURN_FEE_CHARGED"]);
+});
+
+test("amountPaid defaults to 0 when the caller omits it entirely", () => {
+  // Every pre-existing caller in this codebase constructs EngineOrder without
+  // amountPaid — this must keep working exactly as before.
+  const result = run([order()], [line({ statusNormalized: "RETURNED" })]);
+  assert.deepEqual(typesOf(result), ["RETURN_FEE_CHARGED"]);
+});
+
+// ---- Decimal(0).isPositive() is true in decimal.js — "sign not negative",
+// not "greater than zero". Every zero-amount branch in this file used to rely
+// on .isPositive() and would misfire on an honest zero. Caught while adding
+// the tests above; fixed everywhere with .greaterThan(0) instead.
+
+test("a courier configured with zero return fee raises no spurious charge", () => {
+  const result = reconcile({
+    orders: [order()],
+    lines: [line({ statusNormalized: "RETURNED" })],
+    feeRules: { amana: [{ city: null, deliveredFee: 25, returnFee: 0, codPercent: 3 }] },
+    stuckAfterDays: 7,
+    now: NOW,
+  });
+  // A real 0 MAD fee is not a discrepancy — there is nothing to flag.
+  assert.deepEqual(typesOf(result), []);
+});
+
+test("an explicit zero payment on an in-transit order stays PENDING, not PAID", () => {
+  const result = run(
+    [order({ status: "IN_TRANSIT" })],
+    [line({ statusNormalized: "IN_TRANSIT", paidAmount: 0 })],
+  );
+  assert.deepEqual(typesOf(result), []);
+  assert.equal(result.orderUpdates[0].paymentStatus, "PENDING");
+});

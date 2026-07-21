@@ -1,11 +1,12 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Check, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { assignCourier } from "./actions";
+import { formatMAD } from "@/lib/money";
+import { assignCourier, getCourierQuote, type CourierQuote } from "./actions";
 
 export type CourierOption = { id: string; name: string };
 
@@ -22,12 +23,14 @@ export type CourierOption = { id: string; name: string };
  */
 export function CourierCell({
   orderId,
+  city,
   courierName,
   trackingNumber,
   shipped,
   couriers,
 }: {
   orderId: string;
+  city: string;
   courierName: string | null;
   trackingNumber: string | null;
   shipped: boolean;
@@ -39,6 +42,33 @@ export function CourierCell({
   const [courierId, setCourierId] = useState("");
   const [tracking, setTracking] = useState("");
   const [error, setError] = useState<string | null>(null);
+  // Stamped with the selection it answers, so "loading" and "the answer" are
+  // both derived below rather than tracked as separate state the effect
+  // would otherwise have to flip synchronously — the only setState here runs
+  // inside the fetch's own callback, never in the effect body itself.
+  const [quoteFor, setQuoteFor] = useState<{
+    courierId: string;
+    city: string;
+    quote: CourierQuote | null;
+  } | null>(null);
+
+  // Fetch what this courier will actually cost and how long it usually takes
+  // for this city, the moment one is picked — before the seller confirms,
+  // not as a surprise afterwards.
+  useEffect(() => {
+    if (!courierId) return;
+    let cancelled = false;
+    getCourierQuote(courierId, city).then((q) => {
+      if (!cancelled) setQuoteFor({ courierId, city, quote: q });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [courierId, city]);
+
+  const quoteMatchesSelection = quoteFor?.courierId === courierId && quoteFor?.city === city;
+  const quote = quoteMatchesSelection ? quoteFor!.quote : null;
+  const quoteLoading = Boolean(courierId) && !quoteMatchesSelection;
 
   if (shipped || !couriers.length) {
     return (
@@ -113,6 +143,30 @@ export function CourierCell({
           </option>
         ))}
       </select>
+
+      {courierId && (
+        <div className="text-[10.5px] leading-snug bg-surface-muted border border-hair rounded-md px-2 py-1.5">
+          {quoteLoading ? (
+            <span className="text-ink-4">Calcul du délai et des frais…</span>
+          ) : quote ? (
+            <>
+              <span className="text-ink-2">
+                {quote.etaDays !== null
+                  ? `~${quote.etaDays}j pour livrer à ${city}`
+                  : `Délai inconnu à ${city} (pas assez d'historique)`}
+              </span>
+              <br />
+              <span className="text-ink-4">
+                {formatMAD(quote.deliveredFee)} livraison
+                {quote.codPercent > 0 ? ` + ${quote.codPercent}% COD` : ""} ·{" "}
+                {formatMAD(quote.returnFee)} si retour
+              </span>
+            </>
+          ) : (
+            <span className="text-ink-4">Tarifs non configurés pour ce courier.</span>
+          )}
+        </div>
+      )}
 
       <input
         value={tracking}

@@ -5,6 +5,7 @@ import { canSeeMoney, requireSession } from "@/lib/session";
 import { getQueueCounts } from "@/lib/queries/confirmation";
 import { Logo } from "@/components/brand/logo";
 import { AddMenu } from "@/components/app/add-menu";
+import { MonthFilter } from "@/components/app/month-filter";
 import { SidebarNav, type NavItem } from "@/components/app/sidebar-nav";
 import { UserMenu } from "@/components/app/user-menu";
 import { Button } from "@/components/ui/button";
@@ -82,9 +83,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
               can see files; she can't. */}
           <AddMenu canImport={fullAccess} />
 
-          <Button variant="outline" size="pill" className="hidden lg:inline-flex">
-            📅 Ce mois-ci
-          </Button>
+          <MonthFilter />
 
           <Button variant="outline" size="icon-lg" className="rounded-full relative" aria-label="Notifications">
             <Bell className="size-4" />

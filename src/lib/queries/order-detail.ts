@@ -32,6 +32,7 @@ export async function getOrderDetail(storeId: string, orderId: string) {
       deliveredAt: true,
       paidAt: true,
       courier: { select: { id: true, name: true } },
+      deliveryConfirmedBy: { select: { name: true } },
       items: {
         select: { id: true, name: true, quantity: true, unitPrice: true, unitCost: true },
       },
