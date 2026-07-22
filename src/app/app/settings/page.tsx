@@ -1,10 +1,10 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 
 import { requireMoneyAccess } from "@/lib/session";
 import { getCourierFeeRules, getStoreSettings, getTeamMembers } from "@/lib/queries/settings";
 import { StoreSettingsForm } from "./store-settings-form";
 import { CourierFees } from "./courier-fees";
-import { TeamSection } from "./team-section";
 
 export const metadata: Metadata = { title: "Réglages — Fatora" };
 export const dynamic = "force-dynamic";
@@ -40,7 +40,17 @@ export default async function SettingsPage() {
         title="Équipe"
         sub="Une confirmatrice voit uniquement la file de confirmation — jamais les marges ni la facturation."
       >
-        <TeamSection members={team} currentUserId={session.userId} />
+        <div className="flex items-center justify-between">
+          <p className="text-[13.5px] text-ink-3">
+            {team.length} membre{team.length > 1 ? "s" : ""}
+          </p>
+          <Link
+            href="/app/settings/team"
+            className="text-[13px] font-semibold text-brand hover:text-brand-dark"
+          >
+            Gérer l&apos;équipe →
+          </Link>
+        </div>
       </Section>
 
       <Section title="Abonnement">
