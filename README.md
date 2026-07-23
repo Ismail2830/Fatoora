@@ -25,15 +25,20 @@ Fatora automates that cross-check. Import your orders and your courier's report,
 
 | Landing page | Dashboard |
 | --- | --- |
-| _add screenshot_ | _add screenshot_ |
+| <img width="1918" height="944" alt="fatora 1" src="https://github.com/user-attachments/assets/1955d9d3-6d6a-441d-be00-f69c44db546e" />
+ |<img width="1917" height="942" alt="fatora dashboard" src="https://github.com/user-attachments/assets/e78c2d6f-b05f-4ea4-8772-8ff03b87c090" />
+ |
 
 | Order import (WhatsApp paste) | Orders list |
 | --- | --- |
-| _add screenshot_ | _add screenshot_ |
+| <img width="1917" height="944" alt="fatora commandes" src="https://github.com/user-attachments/assets/c49690c3-313a-4733-9445-40bbe7e79252" />
+ | <img width="1919" height="945" alt="fatora 4" src="https://github.com/user-attachments/assets/5d092043-2a67-40a2-8630-cb8323a2ff0a" />
+|
 
 | Analytics | Login |
 | --- | --- |
-| _add screenshot_ | _add screenshot_ |
+| <img width="1919" height="945" alt="fatora analytics" src="https://github.com/user-attachments/assets/a7d219e1-f91f-469c-8627-154b007e4316" />
+ | <img width="1917" height="946" alt="fatora 2" src="https://github.com/user-attachments/assets/dba889ff-3497-440b-837d-3455f809509c" /> |
 
 ## Features
 
