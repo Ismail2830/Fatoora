@@ -1,36 +1,122 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+<div align="center">
 
-## Getting Started
+# Fatora
 
-First, run the development server:
+**Cash-on-delivery reconciliation for Moroccan e-commerce sellers.**
+
+Fatora matches courier delivery reports against your orders automatically — so you know your real profit the day a parcel is delivered, not weeks later when the courier finally pays out.
+
+</div>
+
+---
+
+## The problem
+
+Most COD sellers in Morocco run their business on WhatsApp, Excel, and whatever the courier's PDF says. Couriers deliver, hold the cash, and pay out later in bulk — and their reports don't always match reality: an order marked "delivered" that was never paid, a return fee charged twice, a parcel that's been "in transit" for three weeks. Nobody catches it until the seller manually cross-checks a spreadsheet, if they ever do.
+
+Fatora automates that cross-check. Import your orders and your courier's report, and it tells you exactly where every dirham is — delivered and paid, delivered but still owed, returned, lost — instead of a spreadsheet full of hope.
+
+## Screenshots
+
+<!--
+  Drop screenshots into docs/screenshots/ and reference them below, e.g.:
+  ![Dashboard](docs/screenshots/dashboard.png)
+-->
+
+| Landing page | Dashboard |
+| --- | --- |
+| _add screenshot_ | _add screenshot_ |
+
+| Order import (WhatsApp paste) | Orders list |
+| --- | --- |
+| _add screenshot_ | _add screenshot_ |
+
+| Analytics | Login |
+| --- | --- |
+| _add screenshot_ | _add screenshot_ |
+
+## Features
+
+- **Order import** — Shopify, WooCommerce, Google Sheets/CSV, or manual entry with WhatsApp-message paste-and-parse (Darija-aware).
+- **Courier report import** — dedicated parsers per courier (Amana, Ozone Express, Cathedis, Sendit), each with its own column layout and quirks.
+- **Auto-reconciliation engine** — matches report lines to orders and raises a discrepancy the moment a courier's claim and the seller's books disagree (paid-not-delivered, delivered-not-paid, amount mismatch, lost parcel, stale in-transit).
+- **Real profit dashboard** — cash still in transit with couriers, cash collected this month, delivery rate, and the biggest open money gaps, all live.
+- **Paid-on-delivery flow** — assigning a courier shows the expected delivery window and cost for that city before you commit; delivery confirmation and payment recording are separate, explicit steps so a manual "delivered" claim never gets silently treated as "paid."
+- **Analytics** — return rate by city, delivery rate by courier, collected-vs-expected over time, exportable to CSV.
+- **Team roles** — Owner/Admin see money; a Confirmatrice only sees her confirmation queue — enforced in every query, not just hidden in the sidebar.
+- **Reconciliation queue** — every open discrepancy, prioritized by amount, one click from resolution.
+
+## Tech stack
+
+| | |
+| --- | --- |
+| Framework | [Next.js 16](https://nextjs.org) (App Router, Turbopack), React 19, TypeScript |
+| Database | PostgreSQL via [Neon](https://neon.tech), [Prisma 7](https://www.prisma.io) |
+| Auth | [Auth.js v5](https://authjs.dev) (Credentials provider, bcrypt) |
+| UI | [shadcn/ui](https://ui.shadcn.com) (Radix primitives), Tailwind CSS v4 |
+| Charts | [Recharts](https://recharts.org) |
+| Parsing | [Papaparse](https://www.papaparse.com) (CSV), [xlsx](https://github.com/SheetJS/sheetjs) (courier report spreadsheets), [Zod](https://zod.dev) |
+
+## Getting started
+
+**Prerequisites:** Node 20+, a [Neon](https://neon.tech) Postgres project (or any Postgres instance).
+
+```bash
+git clone https://github.com/Ismail2830/Fatoora.git
+cd Fatoora
+npm install
+```
+
+Copy the env template and fill in your own values:
+
+```bash
+cp .env.example .env
+```
+
+| Variable | What it's for |
+| --- | --- |
+| `DATABASE_URL` | Pooled Neon connection string — used by the app at runtime |
+| `DIRECT_URL` | Direct (non-pooled) connection string — required by Prisma Migrate |
+| `AUTH_SECRET` | Session encryption key — generate with `npx auth secret` |
+| `AUTH_URL` | Canonical app URL, read automatically by Auth.js for redirects |
+| `NEXT_PUBLIC_APP_URL` | Same URL, exposed to the client |
+
+Set up the database and seed realistic demo data:
+
+```bash
+npm run db:push
+npm run db:seed
+```
+
+Run the dev server:
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+> **Note:** after any `prisma generate` (including the first install), restart the dev server — Turbopack caches the previously generated client and won't pick up schema changes on its own.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Scripts
 
-## Learn More
+| Command | Description |
+| --- | --- |
+| `npm run dev` | Start the dev server |
+| `npm run build` | Production build |
+| `npm run start` | Serve the production build |
+| `npm run lint` | ESLint |
+| `npm test` | Run the pure-logic test suite (reconciliation engine, parsers, money math) |
+| `npm run typecheck` | `tsc --noEmit` |
+| `npm run db:migrate` | Create/apply a Prisma migration |
+| `npm run db:push` | Push the schema without a migration (fast local iteration) |
+| `npm run db:seed` | Seed demo data |
+| `npm run db:studio` | Open Prisma Studio |
 
-To learn more about Next.js, take a look at the following resources:
+## Deployment
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Deployed on [Vercel](https://vercel.com), building straight from `master`. The Prisma client is generated into a gitignored folder, so `postinstall: prisma generate` regenerates it on every install — without that step, a fresh clone (including Vercel's) fails to build.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## License
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Private project — all rights reserved.
